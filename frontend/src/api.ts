@@ -1,4 +1,8 @@
-import type { FrameResponse, Health } from './types';
+import type { FrameResponse, Health, SessionInfo } from './types';
+
+export class ApiError extends Error {
+  constructor(message: string, public code: string, public status: number) { super(message); }
+}
 
 export async function request<T>(url: string, init: RequestInit = {}, signal?: AbortSignal): Promise<T> {
   const controller = new AbortController();
@@ -15,7 +19,7 @@ export async function request<T>(url: string, init: RequestInit = {}, signal?: A
       const message = Array.isArray(detail)
         ? detail.map((item: { msg?: string }) => item.msg ?? 'Invalid request').join('; ')
         : detail?.message ?? `Backend returned HTTP ${response.status}.`;
-      throw new Error(message);
+      throw new ApiError(message, detail?.code ?? 'HTTP_ERROR', response.status);
     }
     return data as T;
   } catch (error) {
@@ -34,10 +38,10 @@ export async function checkHealth(signal: AbortSignal): Promise<Health> {
   return data;
 }
 
-export async function processFrame(blob: Blob, frameId: number, capturedAt: number, signal: AbortSignal) {
+export async function processFrame(blob: Blob, frameId: number, capturedAt: number, signal: AbortSignal, session?: SessionInfo) {
   const started = performance.now();
   const data = await request<FrameResponse>(
-    `/api/frames/process?frame_id=${frameId}&captured_at_ms=${capturedAt}`,
+    `/api/frames/process?frame_id=${frameId}&captured_at_ms=${capturedAt}${session ? `&session_id=${encodeURIComponent(session.session_id)}&revision=${session.revision}` : ''}`,
     { method: 'POST', headers: { 'Content-Type': 'image/jpeg' }, body: blob }, signal,
   );
   const rtt = performance.now() - started;
@@ -50,5 +54,16 @@ export async function processFrame(blob: Blob, frameId: number, capturedAt: numb
       data.image.channels !== 3 || data.image.encoding !== 'jpeg' || data.image.payload_bytes !== blob.size ||
       !Array.isArray(data.objects) || data.objects.length !== 0)
     throw new Error('Backend returned invalid frame metadata.');
+  if (session && (!data.vision || data.vision.session_id !== session.session_id || data.vision.frame_id !== frameId ||
+      !Number.isInteger(data.vision.revision) || data.vision.revision < session.revision ||
+      data.vision.width_px !== data.image.width_px || data.vision.height_px !== data.image.height_px))
+    throw new Error('Backend returned mismatched vision metadata.');
   return { data, rtt };
+}
+
+export const post = <T,>(url: string, body: unknown, signal?: AbortSignal) => request<T>(url,
+  { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }, signal);
+export function releaseSession(id: string) {
+  // Best-effort cleanup; server TTL handles tab closure/network failure.
+  void fetch(`/api/sessions/${encodeURIComponent(id)}`, { method: 'DELETE', keepalive: true }).catch(() => {});
 }

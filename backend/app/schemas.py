@@ -1,5 +1,6 @@
 from typing import Literal
 from pydantic import BaseModel, Field
+from .vision_models import VisionResult
 
 
 class Health(BaseModel):
@@ -23,3 +24,4 @@ class FrameResponse(BaseModel):
     processing_ms: float
     image: ImageMetadata
     objects: list = Field(default_factory=list, max_length=0)
+    vision: VisionResult | None = None
